@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import Combine
+import FlyingFox
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -162,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionsGranted = false
     private var pollTimer: Timer?
     private let updateService = UpdateService()
+    private var phoneBridge: PhoneBridgeServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -212,6 +214,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.onUpdateRequest = { [weak self] in
             self?.performUpdate()
         }
+
+        appState.onPhoneBridgeToggle = { [weak self] in
+            self?.togglePhoneBridge()
+        }
+
+        let bridge = PhoneBridgeServer()
+        bridge.onTextReceived = { [weak self] text in
+            self?.appState.receiveFromPhone(text: text)
+        }
+        phoneBridge = bridge
 
         // Auto-poll permissions and coli install status
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -310,6 +322,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func cancelFlow() {
         appState.cancel()
+    }
+
+    private func togglePhoneBridge() {
+        guard let bridge = phoneBridge else { return }
+        if bridge.isRunning {
+            bridge.stop()
+            appState.phoneBridgeRunning = false
+            appState.phoneBridgeURL = nil
+        } else {
+            bridge.start()
+            appState.phoneBridgeRunning = true
+            appState.phoneBridgeURL = bridge.localURL
+        }
     }
 
     private func openPermissionSettings(for kind: PermissionKind) {
@@ -418,6 +443,9 @@ final class AppState: ObservableObject {
     var onConfirm: (() -> Void)?
     var onToggleRequest: (() -> Void)?
     var onUpdateRequest: (() -> Void)?
+    var onPhoneBridgeToggle: (() -> Void)?
+    @Published var phoneBridgeRunning = false
+    var phoneBridgeURL: String?
 
     private let recorder = AudioRecorder()
     private let asrService = ColiASRService()
@@ -471,6 +499,18 @@ final class AppState: ObservableObject {
         onOverlayRequest?(false)
         if let targetApp {
             targetApp.activate()
+        }
+    }
+
+    func receiveFromPhone(text: String) {
+        guard case .idle = phase else { return }
+        previousApp = NSWorkspace.shared.frontmostApplication
+        transcript = text
+        phase = .done(text)
+        onOverlayRequest?(true)
+        // Auto-insert after a brief moment so the overlay is visible
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.confirmInsert()
         }
     }
 
@@ -1466,10 +1506,14 @@ final class StatusItemController: NSObject {
         static let microphone = 250
         static let hotkeyBase = 300
         static let triggerBase = 400
+        static let phoneBridgeToggle = 500
+        static let phoneBridgeURL = 510
+        static let phoneBridgeCopy = 520
     }
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private var cancellable: AnyCancellable?
+    private var phoneBridgeCancellable: AnyCancellable?
     private weak var appState: AppState?
 
     init(appState: AppState) {
@@ -1481,6 +1525,9 @@ final class StatusItemController: NSObject {
         cancellable = appState.$phase.sink { [weak self] phase in
             self?.updateTitle(for: phase)
             self?.updateRecordMenuItem(for: phase)
+        }
+        phoneBridgeCancellable = appState.$phoneBridgeRunning.sink { [weak self] _ in
+            self?.refreshPhoneBridgeMenu()
         }
     }
 
@@ -1545,6 +1592,25 @@ final class StatusItemController: NSObject {
         }
         menu.setSubmenu(triggerSub, for: triggerItem)
         menu.addItem(triggerItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let phoneBridgeToggleItem = NSMenuItem(title: L("Enable Phone Input", "开启手机输入"), action: #selector(togglePhoneBridge), keyEquivalent: "")
+        phoneBridgeToggleItem.target = self
+        phoneBridgeToggleItem.tag = MenuTag.phoneBridgeToggle
+        menu.addItem(phoneBridgeToggleItem)
+
+        let phoneBridgeURLItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        phoneBridgeURLItem.tag = MenuTag.phoneBridgeURL
+        phoneBridgeURLItem.isEnabled = false
+        phoneBridgeURLItem.isHidden = true
+        menu.addItem(phoneBridgeURLItem)
+
+        let phoneBridgeCopyItem = NSMenuItem(title: L("Copy Link", "复制链接"), action: #selector(copyPhoneBridgeURL), keyEquivalent: "")
+        phoneBridgeCopyItem.target = self
+        phoneBridgeCopyItem.tag = MenuTag.phoneBridgeCopy
+        phoneBridgeCopyItem.isHidden = true
+        menu.addItem(phoneBridgeCopyItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -1726,6 +1792,29 @@ final class StatusItemController: NSObject {
         }
     }
 
+    private func refreshPhoneBridgeMenu() {
+        guard let menu = statusItem.menu,
+              let toggleItem = menu.item(withTag: MenuTag.phoneBridgeToggle),
+              let urlItem = menu.item(withTag: MenuTag.phoneBridgeURL),
+              let copyItem = menu.item(withTag: MenuTag.phoneBridgeCopy) else { return }
+        let running = appState?.phoneBridgeRunning ?? false
+        toggleItem.title = running ? L("Disable Phone Input", "关闭手机输入") : L("Enable Phone Input", "开启手机输入")
+        toggleItem.state = running ? .on : .off
+        urlItem.title = appState?.phoneBridgeURL ?? ""
+        urlItem.isHidden = !running
+        copyItem.isHidden = !running
+    }
+
+    @objc private func togglePhoneBridge() {
+        appState?.onPhoneBridgeToggle?()
+    }
+
+    @objc private func copyPhoneBridgeURL() {
+        guard let url = appState?.phoneBridgeURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -1734,6 +1823,7 @@ final class StatusItemController: NSObject {
 extension StatusItemController: NSWindowDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         refreshMicrophoneSubmenu()
+        refreshPhoneBridgeMenu()
     }
 
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -2300,6 +2390,116 @@ enum UpdateError: LocalizedError {
         case .appNotFound: "Update package is invalid"
         case .replaceFailed: "Failed to replace app"
         }
+    }
+}
+
+// MARK: - Phone Bridge Server
+
+private func loadPhoneInputHTML() -> String {
+    guard let url = Bundle.module.url(forResource: "phone-input", withExtension: "html"),
+          let html = try? String(contentsOf: url, encoding: .utf8) else {
+        return "<h1 style='font-family:sans-serif;padding:2em'>Error: phone-input.html not found in bundle</h1>"
+    }
+    return html
+}
+
+
+struct HTMLPageHandler: HTTPHandler, Sendable {
+    func handleRequest(_ request: HTTPRequest) async throws -> HTTPResponse {
+        HTTPResponse(
+            statusCode: .ok,
+            headers: [.contentType: "text/html; charset=utf-8"],
+            body: Data(loadPhoneInputHTML().utf8)
+        )
+    }
+}
+
+struct PhoneWSHandler: WSMessageHandler, Sendable {
+    let continuation: AsyncStream<String>.Continuation
+
+    func makeMessages(for client: AsyncStream<WSMessage>) async throws -> AsyncStream<WSMessage> {
+        let cont = continuation
+        return AsyncStream { _ in
+            Task {
+                for await message in client {
+                    if case .text(let text) = message {
+                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty { cont.yield(trimmed) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+final class PhoneBridgeServer {
+    var onTextReceived: ((String) -> Void)?
+    let port: UInt16 = 7878
+    private(set) var isRunning = false
+    private var serverTask: Task<Void, Never>?
+    private let continuation: AsyncStream<String>.Continuation
+    private let textStream: AsyncStream<String>
+
+    init() {
+        let (stream, cont) = AsyncStream.makeStream(of: String.self, bufferingPolicy: .bufferingNewest(20))
+        textStream = stream
+        continuation = cont
+        startTextListener()
+    }
+
+    private func startTextListener() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await text in self.textStream {
+                self.onTextReceived?(text)
+            }
+        }
+    }
+
+    func start() {
+        guard !isRunning else { return }
+        isRunning = true
+        let cont = continuation
+        let port = self.port
+        serverTask = Task.detached(priority: .utility) {
+            do {
+                let server = HTTPServer(port: port)
+                await server.appendRoute("GET /", to: HTMLPageHandler())
+                await server.appendRoute("GET /ws", to: .webSocket(PhoneWSHandler(continuation: cont)))
+                try await server.run()
+            } catch {}
+        }
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        isRunning = false
+        serverTask?.cancel()
+        serverTask = nil
+    }
+
+    var localURL: String? {
+        guard isRunning, let ip = Self.localIPAddress() else { return nil }
+        return "http://\(ip):\(port)"
+    }
+
+    private static func localIPAddress() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        var ptr = ifaddr
+        while let addr = ptr {
+            defer { ptr = addr.pointee.ifa_next }
+            guard let sa = addr.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: addr.pointee.ifa_name)
+            guard name.hasPrefix("en") else { continue }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(sa, socklen_t(MemoryLayout<sockaddr_in>.size), &hostname, socklen_t(NI_MAXHOST), nil, 0, NI_NUMERICHOST)
+            let ip = String(cString: hostname)
+            if !ip.isEmpty && ip != "0.0.0.0" { return ip }
+        }
+        return nil
     }
 }
 

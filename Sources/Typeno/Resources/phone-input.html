@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>TypeNo</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+:root {
+  --bg: #000; --surface: rgba(255,255,255,0.07); --text: #fff;
+  --secondary: rgba(255,255,255,0.38); --accent: #0a84ff;
+  --success: #34c759; --warn: #ff9f0a; --sheet-bg: #1c1c1e;
+}
+html { height: 100%; }
+body {
+  display: flex; flex-direction: column;
+  height: 100dvh; /* overridden by JS via visualViewport */
+  overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+  padding: max(env(safe-area-inset-top), 16px) 16px 20px;
+  gap: 12px;
+}
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0; padding-bottom: 12px;
+  border-bottom: 0.5px solid rgba(255,255,255,0.08);
+}
+h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.hdr-right { display: flex; align-items: center; gap: 10px; }
+.status-wrap { display: flex; align-items: center; gap: 5px; }
+#dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--secondary); flex-shrink: 0; transition: background 0.3s;
+}
+#dot.on     { background: var(--success); }
+#dot.pending{ background: var(--warn); }
+#statusText { font-size: 13px; color: var(--secondary); }
+.icon-btn {
+  background: none; border: none; color: var(--secondary);
+  font-size: 20px; line-height: 1; cursor: pointer; padding: 2px;
+}
+.icon-btn:active { color: #fff; }
+
+/* ── Textarea (~45% of body height, tracks keyboard via JS) ── */
+textarea {
+  flex-shrink: 0;
+  width: 100%; height: 70%; /* % of body height, which JS keeps = visualViewport.height */
+  background: var(--surface); border: 1.5px solid transparent; border-radius: 20px;
+  padding: 16px; color: var(--text); font-size: 17px; line-height: 1.6;
+  resize: none; outline: none; -webkit-appearance: none; font-family: inherit;
+  overflow-y: auto; transition: border-color 0.2s;
+}
+textarea.pending { border-color: rgba(255,159,10,0.35); }
+textarea::placeholder { color: rgba(255,255,255,0.18); }
+
+/* ── Spacer (pushes send button to bottom) ── */
+.spacer { flex: 1; }
+
+/* ── Send Button ── */
+#sendBtn {
+  flex-shrink: 0; display: none;
+  width: 100%; height: 52px; border-radius: 999px; border: none;
+  background: rgba(255,255,255,0.12); backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px); color: var(--text);
+  font-size: 17px; font-weight: 600; cursor: pointer;
+  transition: background 0.2s, opacity 0.15s; -webkit-appearance: none;
+}
+#sendBtn.show  { display: block; }
+#sendBtn:active{ opacity: 0.6; }
+#sendBtn:disabled { opacity: 0.5; cursor: default; }
+#sendBtn.sent  { background: var(--accent); }
+
+/* ── Settings overlay ── */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(6px); display: none; align-items: flex-end; z-index: 99;
+}
+.overlay.open { display: flex; }
+.sheet {
+  width: 100%; background: var(--sheet-bg);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: max(env(safe-area-inset-bottom), 20px);
+}
+.handle {
+  width: 36px; height: 4px; border-radius: 2px;
+  background: rgba(255,255,255,0.2); margin: 10px auto 0;
+}
+.sheet-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 16px 0;
+}
+.sheet-title { font-size: 17px; font-weight: 600; }
+.lang-toggle {
+  font-size: 13px; font-weight: 600; color: var(--accent);
+  background: rgba(10,132,255,0.12); border: none; border-radius: 8px;
+  padding: 4px 10px; cursor: pointer; letter-spacing: 0.02em;
+}
+.lang-toggle:active { opacity: 0.7; }
+.section-label {
+  font-size: 12px; font-weight: 600; color: var(--secondary);
+  letter-spacing: 0.06em; text-transform: uppercase; padding: 16px 16px 8px;
+}
+.option {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 15px 16px; border-top: 0.5px solid rgba(255,255,255,0.07); cursor: pointer;
+}
+.option-label { font-size: 17px; }
+.check { color: var(--accent); font-size: 17px; opacity: 0; }
+.option.sel .check { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>TypeNo</h1>
+  <div class="hdr-right">
+    <div class="status-wrap"><div id="dot"></div><span id="statusText"></span></div>
+    <button class="icon-btn" id="gearBtn" aria-label="设置">⚙︎</button>
+  </div>
+</header>
+
+<textarea id="input"></textarea>
+<div class="spacer"></div>
+<button id="sendBtn" disabled></button>
+
+<div class="overlay" id="overlay">
+  <div class="sheet">
+    <div class="handle"></div>
+    <div class="sheet-header">
+      <span class="sheet-title" id="sheetTitle"></span>
+      <button class="lang-toggle" id="langBtn"></button>
+    </div>
+    <div class="section-label" id="sectionLabel"></div>
+    <div id="opts">
+      <div class="option" data-v="-1"><span class="option-label" id="o-m"></span><span class="check">✓</span></div>
+      <div class="option" data-v="1" ><span class="option-label" id="o-1"></span><span class="check">✓</span></div>
+      <div class="option" data-v="2" ><span class="option-label" id="o-2"></span><span class="check">✓</span></div>
+      <div class="option" data-v="3" ><span class="option-label" id="o-3"></span><span class="check">✓</span></div>
+      <div class="option" data-v="5" ><span class="option-label" id="o-5"></span><span class="check">✓</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const input    = document.getElementById('input');
+const dot      = document.getElementById('dot');
+const statusEl = document.getElementById('statusText');
+const sendBtn  = document.getElementById('sendBtn');
+const overlay  = document.getElementById('overlay');
+const opts     = document.getElementById('opts');
+
+let ws, timer;
+let mode = parseInt(localStorage.getItem('tn_mode') ?? '2');
+let lang = localStorage.getItem('tn_lang') || 'zh';
+
+// ── i18n ─────────────────────────────────────────────────────────────────
+const I18N = {
+  zh: {
+    connecting: '连接中…', connected: '已连接', reconnecting: '重连中…',
+    sent: '已发送 ✓', pending: s => `${s} 秒后发送…`,
+    phAuto: '在这里输入…',
+    phManual: '在这里输入…（回车发送，Shift+回车换行）',
+    sendLabel: '发送', sentLabel: '已发送 ✓',
+    sheetTitle: '设置', sectionLabel: '发送方式', langBtn: 'EN',
+    oManual: '手动  —  回车键 / 按钮',
+    o: s => `${s} 秒后自动发送`,
+  },
+  en: {
+    connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…',
+    sent: 'Sent ✓', pending: s => `Sending in ${s}s…`,
+    phAuto: 'Type here…',
+    phManual: 'Type here… (Enter to send, Shift+Enter for newline)',
+    sendLabel: 'Send', sentLabel: 'Sent ✓',
+    sheetTitle: 'Settings', sectionLabel: 'Send Mode', langBtn: '中文',
+    oManual: 'Manual  —  Enter / button',
+    o: s => `Auto after ${s} second${s > 1 ? 's' : ''}`,
+  },
+};
+const t = () => I18N[lang];
+
+function applyLang() {
+  const l = t();
+  document.getElementById('sheetTitle').textContent  = l.sheetTitle;
+  document.getElementById('sectionLabel').textContent = l.sectionLabel;
+  document.getElementById('langBtn').textContent      = l.langBtn;
+  document.getElementById('o-m').textContent = l.oManual;
+  [1, 2, 3, 5].forEach(s => { document.getElementById('o-' + s).textContent = l.o(s); });
+  applyMode(); // refreshes placeholder & button label
+}
+
+// ── State helpers ────────────────────────────────────────────────────────
+const isManual  = () => mode === -1;
+const isReady   = () => ws && ws.readyState === 1;
+
+function setDot(cls) { dot.className = cls || ''; }
+function setStatus(key, ...args) {
+  const fn = t()[key];
+  statusEl.textContent = typeof fn === 'function' ? fn(...args) : fn;
+  setDot(key === 'connected' || key === 'sent' ? 'on' : key === 'pending' ? 'pending' : '');
+}
+
+function syncSendBtn() {
+  sendBtn.disabled = !isReady() || !input.value.trim();
+}
+
+function applyMode() {
+  clearTimeout(timer);
+  input.className = '';
+  if (isManual()) {
+    sendBtn.classList.add('show');
+    sendBtn.textContent = t().sendLabel;
+    input.placeholder   = t().phManual;
+    syncSendBtn();
+  } else {
+    sendBtn.classList.remove('show');
+    input.placeholder = t().phAuto;
+  }
+}
+
+// ── Send ─────────────────────────────────────────────────────────────────
+function send() {
+  const text = input.value.trim();
+  if (!text || !isReady()) return;
+  ws.send(text);
+  input.value = '';
+  input.className = '';
+  clearTimeout(timer);
+  if (isManual()) {
+    sendBtn.textContent = t().sentLabel;
+    sendBtn.classList.add('sent');
+    sendBtn.disabled = true;
+    setTimeout(() => {
+      sendBtn.textContent = t().sendLabel;
+      sendBtn.classList.remove('sent');
+      syncSendBtn();
+    }, 1500);
+  }
+  setStatus('sent');
+  setTimeout(() => { if (dot.className === 'on') setStatus('connected'); }, 1500);
+}
+
+function onInput() {
+  clearTimeout(timer);
+  if (isManual()) { syncSendBtn(); return; }
+  if (!input.value.trim()) { input.className = ''; setStatus('connected'); return; }
+  input.className = 'pending';
+  setStatus('pending', mode);
+  timer = setTimeout(send, mode * 1000);
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onopen  = () => { setStatus('connected'); if (isManual()) syncSendBtn(); };
+  ws.onclose = () => { setStatus('reconnecting'); sendBtn.disabled = true; setTimeout(connect, 2000); };
+  ws.onerror = () => ws.close();
+}
+
+// ── Settings sheet ────────────────────────────────────────────────────────
+function refreshOpts() {
+  opts.querySelectorAll('.option').forEach(el =>
+    el.classList.toggle('sel', +el.dataset.v === mode));
+}
+
+document.getElementById('gearBtn').onclick = () => { refreshOpts(); overlay.classList.add('open'); };
+overlay.onclick = e => { if (e.target === overlay) overlay.classList.remove('open'); };
+
+opts.onclick = e => {
+  const el = e.target.closest('.option');
+  if (!el) return;
+  mode = +el.dataset.v;
+  localStorage.setItem('tn_mode', mode);
+  refreshOpts();
+  applyMode();
+  setTimeout(() => overlay.classList.remove('open'), 180);
+};
+
+document.getElementById('langBtn').onclick = () => {
+  lang = lang === 'zh' ? 'en' : 'zh';
+  localStorage.setItem('tn_lang', lang);
+  applyLang();
+};
+
+// ── Event listeners ───────────────────────────────────────────────────────
+input.addEventListener('input', onInput);
+input.addEventListener('keydown', e => {
+  if (isManual() && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+sendBtn.addEventListener('click', send);
+
+// ── iOS keyboard: keep body height = visual viewport height ───────────────
+// When the soft keyboard appears, visualViewport.height shrinks.
+// body height = visualViewport.height  →  textarea (45%) and spacer shrink
+// proportionally, keeping the Send button visible above the keyboard.
+function syncHeight() {
+  const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  document.body.style.height = h + 'px';
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncHeight);
+  window.visualViewport.addEventListener('scroll', syncHeight);
+}
+syncHeight();
+
+// ── Init ──────────────────────────────────────────────────────────────────
+setStatus('connecting');
+applyLang();
+connect();
+</script>
+</body>
+</html>

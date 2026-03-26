@@ -1,0 +1,84 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'          # 打 tag 时自动构建发版（如 v1.2.0）
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  build:
+    name: Build Universal macOS App
+    runs-on: macos-latest  # GitHub Actions 自带完整 Xcode
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 选择 Xcode 版本 ────────────────────────────────────────────────────
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      # ── 构建 Universal Binary ──────────────────────────────────────────────
+      - name: Build
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      # ── 可选：代码签名（需在仓库 Settings → Secrets 配置以下变量）──────────
+      #
+      #   CERTIFICATES_P12        base64 编码的 Developer ID .p12 证书
+      #   CERTIFICATES_PASSWORD   .p12 证书密码
+      #   CODE_SIGN_IDENTITY      例如 "Developer ID Application: Your Name (TEAM_ID)"
+      #   NOTARYTOOL_APPLE_ID     Apple ID 邮箱
+      #   NOTARYTOOL_PASSWORD     App 专用密码（在 appleid.apple.com 生成）
+      #   NOTARYTOOL_TEAM_ID      Team ID（在 developer.apple.com 查看）
+      #
+      - name: Import Certificate
+        if: ${{ secrets.CERTIFICATES_P12 != '' }}
+        env:
+          CERTIFICATES_P12: ${{ secrets.CERTIFICATES_P12 }}
+          CERTIFICATES_PASSWORD: ${{ secrets.CERTIFICATES_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASS="ci-$(openssl rand -hex 8)"
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          echo "$CERTIFICATES_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATES_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+      # ── 打包 .app（签名 + 公证） ───────────────────────────────────────────
+      - name: Package App
+        env:
+          CODE_SIGN_IDENTITY:   ${{ secrets.CODE_SIGN_IDENTITY }}
+          NOTARYTOOL_APPLE_ID:  ${{ secrets.NOTARYTOOL_APPLE_ID }}
+          NOTARYTOOL_PASSWORD:  ${{ secrets.NOTARYTOOL_PASSWORD }}
+          NOTARYTOOL_TEAM_ID:   ${{ secrets.NOTARYTOOL_TEAM_ID }}
+        run: ./scripts/build_app.sh
+
+      # ── 上传构建产物 ───────────────────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TypeNo.app.zip
+          path: dist/TypeNo.app.zip
+          if-no-files-found: warn
+
+      # ── 打 tag 时自动创建 GitHub Release ──────────────────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TypeNo.app.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

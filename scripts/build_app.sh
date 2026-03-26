@@ -33,22 +33,45 @@ find_codesign_identity() {
 
 mkdir -p "$ROOT_DIR/dist"
 
-echo "==> Building TypeNo (Universal Binary: arm64 + x86_64)..."
-swift build -c release --arch arm64 --arch x86_64 --package-path "$ROOT_DIR"
-
-UNIVERSAL_BINARY="$ROOT_DIR/.build/apple/Products/Release/TypeNo"
+# Detect whether xcbuild (full Xcode) is available for Universal Binary builds.
+XCBUILD="/Library/Developer/SharedFrameworks/XCBuild.framework/Versions/A/Support/xcbuild"
+if [ -x "$XCBUILD" ]; then
+    echo "==> Building TypeNo (Universal Binary: arm64 + x86_64)..."
+    swift build -c release --arch arm64 --arch x86_64 --package-path "$ROOT_DIR"
+    BUILT_BINARY="$ROOT_DIR/.build/apple/Products/Release/TypeNo"
+    RESOURCE_BUNDLE="$ROOT_DIR/.build/apple/Products/Release/TypeNo_TypeNo.bundle"
+    IS_UNIVERSAL=1
+else
+    echo "==> Xcode not found (xcbuild missing). Building native arch only..."
+    echo "    Install full Xcode for Universal Binary / distribution builds."
+    swift build -c release --package-path "$ROOT_DIR"
+    BUILT_BINARY="$ROOT_DIR/.build/release/TypeNo"
+    RESOURCE_BUNDLE="$ROOT_DIR/.build/release/TypeNo_TypeNo.bundle"
+    IS_UNIVERSAL=0
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-cp "$UNIVERSAL_BINARY" "$MACOS_DIR/TypeNo"
+cp "$BUILT_BINARY" "$MACOS_DIR/TypeNo"
 
-echo "==> Verifying Universal Binary..."
-lipo -info "$MACOS_DIR/TypeNo"
+if [ "$IS_UNIVERSAL" = "1" ]; then
+    echo "==> Verifying Universal Binary..."
+    lipo -info "$MACOS_DIR/TypeNo"
+fi
+
 cp "$ROOT_DIR/App/Info.plist" "$CONTENTS_DIR/Info.plist"
 
 if [ -f "$ROOT_DIR/App/TypeNo.icns" ]; then
     cp "$ROOT_DIR/App/TypeNo.icns" "$RESOURCES_DIR/TypeNo.icns"
+fi
+
+# Copy SPM resource bundle (phone-input.html and other resources)
+if [ -d "$RESOURCE_BUNDLE" ]; then
+    echo "==> Copying resource bundle..."
+    cp -r "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
+else
+    echo "Warning: Resource bundle not found at $RESOURCE_BUNDLE"
 fi
 
 chmod +x "$MACOS_DIR/TypeNo"
@@ -73,9 +96,19 @@ if [ -n "$CODE_SIGN_NAME" ]; then
     ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"
 
     echo "==> Submitting for notarization..."
-    xcrun notarytool submit "$ZIP_PATH" \
-        --keychain-profile "notarytool" \
-        --wait
+    if [ -n "${NOTARYTOOL_APPLE_ID:-}" ] && [ -n "${NOTARYTOOL_PASSWORD:-}" ] && [ -n "${NOTARYTOOL_TEAM_ID:-}" ]; then
+        # CI mode: use env vars (GitHub Actions secrets)
+        xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$NOTARYTOOL_APPLE_ID" \
+            --password "$NOTARYTOOL_PASSWORD" \
+            --team-id "$NOTARYTOOL_TEAM_ID" \
+            --wait
+    else
+        # Local mode: use keychain profile (set up once with notarytool store-credentials)
+        xcrun notarytool submit "$ZIP_PATH" \
+            --keychain-profile "notarytool" \
+            --wait
+    fi
 
     echo "==> Stapling notarization ticket..."
     xcrun stapler staple "$APP_DIR"
