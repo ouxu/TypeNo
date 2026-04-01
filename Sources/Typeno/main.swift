@@ -151,27 +151,37 @@ extension Array {
 
 extension Notification.Name {
     static let hotkeyConfigChanged = Notification.Name("ai.marswave.typeno.hotkeyConfigChanged")
+    static let appSettingsChanged = Notification.Name("ai.marswave.typeno.appSettingsChanged")
 }
 
 enum AppSettings {
     @MainActor
+    private static func postSettingsChanged(restartHotkeyMonitor: Bool) {
+        NotificationCenter.default.post(name: .appSettingsChanged, object: nil)
+        if restartHotkeyMonitor {
+            NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+        }
+    }
+
+    @MainActor
     static func setHotkeyModifier(_ modifier: HotkeyModifier) {
         guard UserDefaults.standard.hotkeyModifier != modifier else { return }
         UserDefaults.standard.hotkeyModifier = modifier
-        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+        postSettingsChanged(restartHotkeyMonitor: true)
     }
 
     @MainActor
     static func setTriggerMode(_ mode: TriggerMode) {
         guard UserDefaults.standard.triggerMode != mode else { return }
         UserDefaults.standard.triggerMode = mode
-        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+        postSettingsChanged(restartHotkeyMonitor: true)
     }
 
     @MainActor
     static func setMicrophoneSelection(_ selection: MicrophoneSelection) {
         guard UserDefaults.standard.microphoneSelection != selection else { return }
         UserDefaults.standard.microphoneSelection = selection
+        postSettingsChanged(restartHotkeyMonitor: false)
     }
 }
 
@@ -180,6 +190,7 @@ enum AppSettings {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     private var statusItemController: StatusItemController?
+    private var settingsWindowController: SettingsWindowController?
     private var hotkeyMonitor: HotkeyMonitor?
     private var overlayController: OverlayPanelController?
     private var permissionsGranted = false
@@ -191,7 +202,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         overlayController = OverlayPanelController(appState: appState)
-        statusItemController = StatusItemController(appState: appState)
         hotkeyMonitor = HotkeyMonitor(
             modifier: UserDefaults.standard.hotkeyModifier,
             triggerMode: UserDefaults.standard.triggerMode,
@@ -246,6 +256,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.appState.receiveFromPhone(text: text)
         }
         phoneBridge = bridge
+
+        settingsWindowController = SettingsWindowController(
+            appState: appState,
+            actions: SettingsActions(
+                togglePhoneInput: { [weak self] in self?.togglePhoneBridge() },
+                copyPhoneInputLink: { [weak self] in self?.copyPhoneBridgeURLToPasteboard() },
+                checkForUpdates: { [weak self] in self?.performUpdate() },
+                openPrivacySettings: { [weak self] in self?.openGeneralPrivacySettings() },
+                refreshRuntimeStatus: { [weak self] in self?.refreshRuntimeStatus() }
+            )
+        )
+
+        statusItemController = StatusItemController(
+            appState: appState,
+            onOpenSettings: { [weak self] in self?.showSettingsWindow() },
+            onCheckForUpdates: { [weak self] in self?.performUpdate() },
+            onOpenPrivacySettings: { [weak self] in self?.openGeneralPrivacySettings() },
+            onTogglePhoneBridge: { [weak self] in self?.togglePhoneBridge() },
+            onCopyPhoneBridgeURL: { [weak self] in self?.copyPhoneBridgeURLToPasteboard() }
+        )
 
         // Auto-poll permissions and coli install status
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -351,16 +381,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if bridge.isRunning {
             bridge.stop()
             appState.phoneBridgeRunning = false
-            appState.phoneBridgeURL = nil
         } else {
             bridge.start()
-            appState.phoneBridgeRunning = true
-            appState.phoneBridgeURL = bridge.localURL
         }
+        appState.phoneBridgeRunning = bridge.isRunning
+        appState.phoneBridgeURL = bridge.localURL
     }
 
     private func openPermissionSettings(for kind: PermissionKind) {
         PermissionManager.openPrivacySettings(for: [kind])
+    }
+
+    private func openGeneralPrivacySettings() {
+        PermissionManager.openPrivacySettings(for: [])
+    }
+
+    private func copyPhoneBridgeURLToPasteboard() {
+        guard let url = appState.phoneBridgeURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+    }
+
+    private func showSettingsWindow() {
+        settingsWindowController?.showAndActivate()
+    }
+
+    private func refreshRuntimeStatus() {
+        let missingPermissions = PermissionManager.missingPermissions(requestMicrophoneIfNeeded: false)
+        permissionsGranted = missingPermissions.isEmpty
+        appState.phoneBridgeURL = phoneBridge?.localURL
+        pollStatus()
     }
 
     private func openColiInstallHelp() {
@@ -467,7 +517,7 @@ final class AppState: ObservableObject {
     var onUpdateRequest: (() -> Void)?
     var onPhoneBridgeToggle: (() -> Void)?
     @Published var phoneBridgeRunning = false
-    var phoneBridgeURL: String?
+    @Published var phoneBridgeURL: String?
 
     private let recorder = AudioRecorder()
     private let asrService = ColiASRService()
@@ -1540,9 +1590,26 @@ final class StatusItemController: NSObject {
     private var phoneBridgeCancellable: AnyCancellable?
     private var hotkeyConfigCancellable: AnyCancellable?
     private weak var appState: AppState?
+    private let onOpenSettings: () -> Void
+    private let onCheckForUpdates: () -> Void
+    private let onOpenPrivacySettings: () -> Void
+    private let onTogglePhoneBridge: () -> Void
+    private let onCopyPhoneBridgeURL: () -> Void
 
-    init(appState: AppState) {
+    init(
+        appState: AppState,
+        onOpenSettings: @escaping () -> Void,
+        onCheckForUpdates: @escaping () -> Void,
+        onOpenPrivacySettings: @escaping () -> Void,
+        onTogglePhoneBridge: @escaping () -> Void,
+        onCopyPhoneBridgeURL: @escaping () -> Void
+    ) {
         self.appState = appState
+        self.onOpenSettings = onOpenSettings
+        self.onCheckForUpdates = onCheckForUpdates
+        self.onOpenPrivacySettings = onOpenPrivacySettings
+        self.onTogglePhoneBridge = onTogglePhoneBridge
+        self.onCopyPhoneBridgeURL = onCopyPhoneBridgeURL
         super.init()
         configureMenu()
         configureDragDrop()
@@ -1643,6 +1710,10 @@ final class StatusItemController: NSObject {
         menu.addItem(phoneBridgeCopyItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        let settingsItem = NSMenuItem(title: L("Settings...", "设置..."), action: #selector(openSettingsWindow), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         let updateItem = NSMenuItem(title: L("Check for Updates...", "检查更新..."), action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
@@ -1820,7 +1891,11 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func openPrivacySettings() {
-        PermissionManager.openPrivacySettings(for: [])
+        onOpenPrivacySettings()
+    }
+
+    @objc private func openSettingsWindow() {
+        onOpenSettings()
     }
 
     @objc private func toggleRecording() {
@@ -1828,7 +1903,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func checkForUpdates() {
-        appState?.onUpdateRequest?()
+        onCheckForUpdates()
     }
 
     func setUpdateAvailable(_ version: String) {
@@ -1870,13 +1945,11 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func togglePhoneBridge() {
-        appState?.onPhoneBridgeToggle?()
+        onTogglePhoneBridge()
     }
 
     @objc private func copyPhoneBridgeURL() {
-        guard let url = appState?.phoneBridgeURL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url, forType: .string)
+        onCopyPhoneBridgeURL()
     }
 
     @objc private func quit() {
