@@ -24,7 +24,5 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>TypeNo needs microphone access to capture your voice for transcription.</string>
 </dict>
 </plist>
