@@ -160,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private var hotkeyMonitor: HotkeyMonitor?
     private var overlayController: OverlayPanelController?
+    private var settingsWindowController: SettingsWindowController?
     private var permissionsGranted = false
     private var pollTimer: Timer?
     private let updateService = UpdateService()
@@ -169,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         overlayController = OverlayPanelController(appState: appState)
+        settingsWindowController = SettingsWindowController(appState: appState)
         statusItemController = StatusItemController(appState: appState)
         hotkeyMonitor = HotkeyMonitor(
             modifier: UserDefaults.standard.hotkeyModifier,
@@ -217,6 +219,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         appState.onPhoneBridgeToggle = { [weak self] in
             self?.togglePhoneBridge()
+        }
+
+        appState.onOpenSettingsRequest = { [weak self] in
+            self?.showSettingsWindow()
         }
 
         let bridge = PhoneBridgeServer()
@@ -346,6 +352,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    private func showSettingsWindow() {
+        settingsWindowController?.show()
+    }
+
     private func performUpdate() {
         Task {
             appState.phase = .updating(L("Checking for updates...", "检查更新..."))
@@ -444,6 +454,7 @@ final class AppState: ObservableObject {
     var onToggleRequest: (() -> Void)?
     var onUpdateRequest: (() -> Void)?
     var onPhoneBridgeToggle: (() -> Void)?
+    var onOpenSettingsRequest: (() -> Void)?
     @Published var phoneBridgeRunning = false
     var phoneBridgeURL: String?
 
@@ -1502,18 +1513,24 @@ final class HotkeyMonitor {
 final class StatusItemController: NSObject {
     private enum MenuTag {
         static let record = 100
+        static let settings = 150
         static let update = 200
         static let microphone = 250
+        static let hotkeyMenu = 260
+        static let triggerMenu = 270
         static let hotkeyBase = 300
         static let triggerBase = 400
         static let phoneBridgeToggle = 500
         static let phoneBridgeURL = 510
         static let phoneBridgeCopy = 520
+        static let phoneBridgeQR = 530
     }
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private var cancellable: AnyCancellable?
     private var phoneBridgeCancellable: AnyCancellable?
+    private var hotkeyConfigCancellable: AnyCancellable?
+    private let phoneBridgeQRCodeWindowController = PhoneBridgeQRCodeWindowController()
     private weak var appState: AppState?
 
     init(appState: AppState) {
@@ -1528,6 +1545,14 @@ final class StatusItemController: NSObject {
         }
         phoneBridgeCancellable = appState.$phoneBridgeRunning.sink { [weak self] _ in
             self?.refreshPhoneBridgeMenu()
+        }
+        hotkeyConfigCancellable = NotificationCenter.default.publisher(for: .hotkeyConfigChanged).sink { [weak self] _ in
+            guard let self else { return }
+            self.refreshHotkeySubmenu()
+            self.refreshTriggerSubmenu()
+            if let phase = self.appState?.phase {
+                self.updateRecordMenuItem(for: phase)
+            }
         }
     }
 
@@ -1568,6 +1593,7 @@ final class StatusItemController: NSObject {
 
         // Hotkey sub-menu
         let hotkeyItem = NSMenuItem(title: L("Hotkey", "快捷键"), action: nil, keyEquivalent: "")
+        hotkeyItem.tag = MenuTag.hotkeyMenu
         let hotkeySub = NSMenu()
         for (i, m) in HotkeyModifier.allCases.enumerated() {
             let item = NSMenuItem(title: m.label, action: #selector(changeHotkey(_:)), keyEquivalent: "")
@@ -1581,6 +1607,7 @@ final class StatusItemController: NSObject {
 
         // Trigger Mode sub-menu
         let triggerItem = NSMenuItem(title: L("Trigger Mode", "触发方式"), action: nil, keyEquivalent: "")
+        triggerItem.tag = MenuTag.triggerMenu
         let triggerSub = NSMenu()
         let curTrigger = UserDefaults.standard.triggerMode
         for (i, t) in TriggerMode.allCases.enumerated() {
@@ -1612,7 +1639,18 @@ final class StatusItemController: NSObject {
         phoneBridgeCopyItem.isHidden = true
         menu.addItem(phoneBridgeCopyItem)
 
+        let phoneBridgeQRItem = NSMenuItem(title: L("Show QR Code...", "显示二维码..."), action: #selector(showPhoneBridgeQRCode), keyEquivalent: "")
+        phoneBridgeQRItem.tag = MenuTag.phoneBridgeQR
+        phoneBridgeQRItem.target = self
+        phoneBridgeQRItem.isHidden = true
+        menu.addItem(phoneBridgeQRItem)
+
         menu.addItem(NSMenuItem.separator())
+
+        let settingsItem = NSMenuItem(title: L("Settings...", "设置..."), action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        settingsItem.tag = MenuTag.settings
+        menu.addItem(settingsItem)
 
         let updateItem = NSMenuItem(title: L("Check for Updates...", "检查更新..."), action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
@@ -1673,6 +1711,26 @@ final class StatusItemController: NSObject {
         menu.setSubmenu(makeMicrophoneSubmenu(), for: microphoneItem)
     }
 
+    private func refreshHotkeySubmenu() {
+        guard let menu = statusItem.menu,
+              let hotkeyItem = menu.item(withTag: MenuTag.hotkeyMenu),
+              let submenu = hotkeyItem.submenu else { return }
+        let current = UserDefaults.standard.hotkeyModifier
+        for (index, item) in submenu.items.enumerated() {
+            item.state = HotkeyModifier.allCases[safe: index] == current ? .on : .off
+        }
+    }
+
+    private func refreshTriggerSubmenu() {
+        guard let menu = statusItem.menu,
+              let triggerItem = menu.item(withTag: MenuTag.triggerMenu),
+              let submenu = triggerItem.submenu else { return }
+        let current = UserDefaults.standard.triggerMode
+        for (index, item) in submenu.items.enumerated() {
+            item.state = TriggerMode.allCases[safe: index] == current ? .on : .off
+        }
+    }
+
     private func updateRecordMenuItem(for phase: AppPhase) {
         guard let item = statusItem.menu?.item(withTag: MenuTag.record) else { return }
         let sym = UserDefaults.standard.hotkeyModifier.symbol
@@ -1727,7 +1785,7 @@ final class StatusItemController: NSObject {
     @objc private func changeHotkey(_ sender: NSMenuItem) {
         let idx = sender.tag - MenuTag.hotkeyBase
         guard let mod = HotkeyModifier.allCases[safe: idx] else { return }
-        UserDefaults.standard.hotkeyModifier = mod
+        AppSettings.setHotkeyModifier(mod)
         // Update checkmarks
         sender.menu?.items.forEach { $0.state = $0.tag == sender.tag ? .on : .off }
         // Refresh title + record item
@@ -1735,14 +1793,13 @@ final class StatusItemController: NSObject {
             updateTitle(for: phase)
             updateRecordMenuItem(for: phase)
         }
-        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
     }
 
     @objc private func changeMicrophone(_ sender: NSMenuItem) {
         if let uniqueID = sender.representedObject as? String {
-            UserDefaults.standard.microphoneSelection = .specific(uniqueID)
+            AppSettings.setMicrophoneSelection(.specific(uniqueID))
         } else {
-            UserDefaults.standard.microphoneSelection = .automatic
+            AppSettings.setMicrophoneSelection(.automatic)
         }
         refreshMicrophoneSubmenu()
     }
@@ -1750,9 +1807,8 @@ final class StatusItemController: NSObject {
     @objc private func changeTriggerMode(_ sender: NSMenuItem) {
         let idx = sender.tag - MenuTag.triggerBase
         guard let mode = TriggerMode.allCases[safe: idx] else { return }
-        UserDefaults.standard.triggerMode = mode
+        AppSettings.setTriggerMode(mode)
         sender.menu?.items.forEach { $0.state = $0.tag == sender.tag ? .on : .off }
-        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
     }
 
     @objc private func openPrivacySettings() {
@@ -1765,6 +1821,10 @@ final class StatusItemController: NSObject {
 
     @objc private func checkForUpdates() {
         appState?.onUpdateRequest?()
+    }
+
+    @objc private func openSettings() {
+        appState?.onOpenSettingsRequest?()
     }
 
     func setUpdateAvailable(_ version: String) {
@@ -1796,13 +1856,16 @@ final class StatusItemController: NSObject {
         guard let menu = statusItem.menu,
               let toggleItem = menu.item(withTag: MenuTag.phoneBridgeToggle),
               let urlItem = menu.item(withTag: MenuTag.phoneBridgeURL),
-              let copyItem = menu.item(withTag: MenuTag.phoneBridgeCopy) else { return }
+              let copyItem = menu.item(withTag: MenuTag.phoneBridgeCopy),
+              let qrItem = menu.item(withTag: MenuTag.phoneBridgeQR) else { return }
         let running = appState?.phoneBridgeRunning ?? false
+        let url = appState?.phoneBridgeURL
         toggleItem.title = running ? L("Disable Phone Input", "关闭手机输入") : L("Enable Phone Input", "开启手机输入")
         toggleItem.state = running ? .on : .off
-        urlItem.title = appState?.phoneBridgeURL ?? ""
+        urlItem.title = url ?? ""
         urlItem.isHidden = !running
         copyItem.isHidden = !running
+        qrItem.isHidden = !running
     }
 
     @objc private func togglePhoneBridge() {
@@ -1815,6 +1878,10 @@ final class StatusItemController: NSObject {
         NSPasteboard.general.setString(url, forType: .string)
     }
 
+    @objc private func showPhoneBridgeQRCode() {
+        phoneBridgeQRCodeWindowController.show(url: appState?.phoneBridgeURL)
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -1823,7 +1890,12 @@ final class StatusItemController: NSObject {
 extension StatusItemController: NSWindowDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         refreshMicrophoneSubmenu()
+        refreshHotkeySubmenu()
+        refreshTriggerSubmenu()
         refreshPhoneBridgeMenu()
+        if let phase = appState?.phase {
+            updateRecordMenuItem(for: phase)
+        }
     }
 
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
