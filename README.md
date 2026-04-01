@@ -17,6 +17,7 @@ Special thanks to [marswave ai's coli project](https://github.com/marswaveai/col
 1. **Short-press Control** to start recording
 2. **Short-press Control** again to stop
 3. Text is automatically transcribed and pasted into your active app (also copied to clipboard)
+4. While recording, the overlay shows segmented preview text about once per second; after you stop, TypeNo still runs a final full-file transcription before pasting
 
 That's it. No windows, no settings, no accounts.
 
@@ -34,13 +35,22 @@ TypeNo is signed and notarized by Apple — it should open without any warnings.
 
 ### Install the speech engine
 
-TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition:
+TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition.
+
+**Prerequisites:**
+- [Node.js](https://nodejs.org) (LTS recommended — install directly from nodejs.org for best compatibility)
+- [ffmpeg](https://ffmpeg.org) — required for audio conversion: `brew install ffmpeg`
 
 ```bash
 npm install -g @marswave/coli
 ```
 
 If Coli is missing, TypeNo will show an in-app setup prompt with the install command.
+
+> **Node 24+:** If you get a `sherpa-onnx-node` error, build from source:
+> ```bash
+> npm install -g @marswave/coli --build-from-source
+> ```
 
 ### First Launch
 
@@ -49,6 +59,16 @@ TypeNo needs two one-time permissions:
 - **Accessibility** — to paste text into apps
 
 The app will guide you through granting these on first launch.
+
+### Troubleshooting: Coli Model Download Fails
+
+The speech model is downloaded from GitHub. If GitHub is inaccessible in your network, the download will fail.
+
+**Fix:** Enable **TUN mode** (also called Enhanced Mode) in your proxy tool to ensure all system-level traffic is routed correctly. Then retry the install:
+
+```bash
+npm install -g @marswave/coli
+```
 
 ### Troubleshooting: Accessibility Permission Not Working
 
@@ -77,6 +97,7 @@ The app will be at `dist/TypeNo.app`. Move it to `/Applications/` for persistent
 |---|---|
 | Start/stop recording | Short-press `Control` (< 300ms, no other keys) |
 | Start/stop recording | Menu bar → Record |
+| Watch incremental transcription | Overlay updates about once per second while processing |
 | Choose microphone | Menu bar → Microphone → Automatic / specific device |
 | Transcribe a file | Drag `.m4a`/`.mp3`/`.wav`/`.aac` to the menu bar icon |
 | Check for updates | Menu bar → Check for Updates... |

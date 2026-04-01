@@ -17,6 +17,7 @@
 1. **短按 Control** 开始录音
 2. **再短按 Control** 停止
 3. 文字自动转录并粘贴到当前应用（同时复制到剪贴板）
+4. 录音时，悬浮条会大约每秒显示一次分段预览；停止后，TypeNo 仍会先执行完整文件转录，再进行粘贴
 
 就这么简单。没有窗口，没有设置，没有账号。
 
@@ -33,13 +34,22 @@ TypeNo 已通过 Apple 签名和公证，可以直接打开使用。
 
 ### 安装语音识别引擎
 
-TypeNo 使用 [coli](https://github.com/marswaveai/coli) 进行本地语音识别：
+TypeNo 使用 [coli](https://github.com/marswaveai/coli) 进行本地语音识别。
+
+**前置依赖：**
+- [Node.js](https://nodejs.org)（推荐 LTS 版本，直接从 nodejs.org 安装兼容性最好）
+- [ffmpeg](https://ffmpeg.org) — 音频转换必需：`brew install ffmpeg`
 
 ```bash
 npm install -g @marswave/coli
 ```
 
 如果未安装 Coli，TypeNo 会在应用内弹出引导提示。
+
+> **Node 24+：** 如果遇到 `sherpa-onnx-node` 错误，请从源码编译安装：
+> ```bash
+> npm install -g @marswave/coli --build-from-source
+> ```
 
 ### 首次启动
 
@@ -48,6 +58,16 @@ TypeNo 需要两个一次性授权：
 - **辅助功能** — 将文字粘贴到应用中
 
 首次启动时，应用会自动引导你完成授权。
+
+### 常见问题：Coli 模型下载失败
+
+语音模型从 GitHub 下载。如果你的网络无法访问 GitHub，下载会失败。
+
+**解决方法：** 在代理工具中开启 **TUN 模式**（也叫增强模式），确保系统级流量正常路由。然后重试安装：
+
+```bash
+npm install -g @marswave/coli
+```
 
 ### 常见问题：辅助功能权限无效
 
@@ -76,6 +96,7 @@ scripts/build_app.sh
 |---|---|
 | 开始/停止录音 | 短按 `Control`（< 300ms，不按其他键） |
 | 开始/停止录音 | 菜单栏 → Record |
+| 查看流式转录 | 转录过程中悬浮条约每秒更新一次 |
 | 选择麦克风 | 菜单栏 → 麦克风 → 自动 / 指定设备 |
 | 转录文件 | 拖拽 `.m4a`/`.mp3`/`.wav`/`.aac` 到菜单栏图标 |
 | 检查更新 | 菜单栏 → Check for Updates... |
