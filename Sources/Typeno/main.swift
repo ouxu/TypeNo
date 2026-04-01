@@ -182,15 +182,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
 
     private var statusItemController: StatusItemController?
+    private var settingsWindowController: SettingsWindowController?
     private var overlayController: OverlayPanelController?
     private let updateService = UpdateService()
     private var phoneBridge: PhoneBridgeServer?
+    private var didOpenPhonePageOnLaunch = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         overlayController = OverlayPanelController(appState: appState)
-        statusItemController = StatusItemController(appState: appState)
+        settingsWindowController = SettingsWindowController(
+            appState: appState,
+            actions: SettingsActions(
+                togglePhoneInput: { [weak self] in self?.togglePhoneBridge() },
+                openPhoneInputLink: { [weak self] in self?.openPhoneBridgeURL() },
+                copyPhoneInputLink: { [weak self] in self?.copyPhoneBridgeURLToPasteboard() },
+                openAccessibilitySettings: { [weak self] in self?.openAccessibilitySettings() },
+                checkForUpdates: { [weak self] in self?.performUpdate() },
+                refreshRuntimeStatus: { [weak self] in self?.refreshRuntimeStatus() }
+            )
+        )
+        statusItemController = StatusItemController(
+            appState: appState,
+            onOpenSettings: { [weak self] in self?.showSettingsWindow() }
+        )
 
         appState.onOverlayRequest = { [weak self] visible in
             visible ? self?.overlayController?.show() : self?.overlayController?.hide()
@@ -217,6 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bridge.start()
         }
         refreshPhoneBridgeState()
+        showSettingsWindow()
+        openPhonePageOnLaunchIfPossible()
 
         Task {
             if let release = await updateService.checkForUpdate() {
@@ -265,6 +283,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.showPhoneBridgeState(enabled: phoneBridge.isRunning, url: phoneBridge.localURL)
     }
 
+    private func refreshRuntimeStatus() {
+        refreshPhoneBridgeState()
+    }
+
+    private func showSettingsWindow() {
+        settingsWindowController?.showAndActivate()
+    }
+
+    private func openAccessibilitySettings() {
+        AccessibilityPermissionManager.requestIfNeeded()
+        AccessibilityPermissionManager.openSettings()
+    }
+
+    private func openPhoneBridgeURL() {
+        guard let urlString = appState.phoneBridgeURL, let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func copyPhoneBridgeURLToPasteboard() {
+        guard let url = appState.phoneBridgeURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+    }
+
+    private func openPhonePageOnLaunchIfPossible() {
+        guard !didOpenPhonePageOnLaunch else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            for _ in 0..<8 {
+                self.refreshPhoneBridgeState()
+
+                if self.appState.phoneBridgeRunning, self.appState.phoneBridgeURL != nil {
+                    self.didOpenPhonePageOnLaunch = true
+                    self.openPhoneBridgeURL()
+                    return
+                }
+
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
     private func performUpdate() {
         Task {
             appState.phase = .updating(L("Checking for updates...", "检查更新..."))
@@ -303,6 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class StatusItemController: NSObject {
     private enum MenuTag {
+        static let settings = 90
         static let phoneBridgeToggle = 100
         static let phoneBridgeURL = 110
         static let phoneBridgeOpen = 120
@@ -313,11 +376,13 @@ final class StatusItemController: NSObject {
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private weak var appState: AppState?
+    private let onOpenSettings: () -> Void
     private var phaseCancellable: AnyCancellable?
     private var bridgeCancellable: AnyCancellable?
 
-    init(appState: AppState) {
+    init(appState: AppState, onOpenSettings: @escaping () -> Void) {
         self.appState = appState
+        self.onOpenSettings = onOpenSettings
         super.init()
         configureMenu()
         updateStatusIcon(for: appState.phase)
@@ -345,6 +410,12 @@ final class StatusItemController: NSObject {
         let aboutItem = NSMenuItem(title: "TypeNo  v\(version)", action: nil, keyEquivalent: "")
         aboutItem.isEnabled = false
         menu.addItem(aboutItem)
+
+        let settingsItem = NSMenuItem(title: L("Open Settings", "打开设置"), action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        settingsItem.tag = MenuTag.settings
+        menu.addItem(settingsItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let toggleItem = NSMenuItem(title: "", action: #selector(togglePhoneBridge), keyEquivalent: "")
@@ -390,9 +461,23 @@ final class StatusItemController: NSObject {
         refreshPhoneBridgeMenu()
     }
 
-    private func makeStatusBarImage(systemName: String) -> NSImage? {
-        let image = NSImage(systemSymbolName: systemName, accessibilityDescription: "TypeNo")
-        image?.isTemplate = true
+    private func makeStatusBarSymbolImage(_ symbol: String) -> NSImage {
+        let size = NSSize(width: 22, height: 22)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 16, weight: .medium),
+                .foregroundColor: NSColor.labelColor,
+            ]
+            let string = symbol as NSString
+            let stringSize = string.size(withAttributes: attrs)
+            let point = NSPoint(
+                x: (rect.width - stringSize.width) / 2,
+                y: (rect.height - stringSize.height) / 2
+            )
+            string.draw(at: point, withAttributes: attrs)
+            return true
+        }
+        image.isTemplate = true
         return image
     }
 
@@ -409,8 +494,7 @@ final class StatusItemController: NSObject {
             button.imagePosition = .noImage
             button.title = "↓"
         default:
-            let running = appState?.phoneBridgeRunning ?? false
-            button.image = makeStatusBarImage(systemName: running ? "iphone" : "iphone.slash")
+            button.image = makeStatusBarSymbolImage("◎")
             button.imagePosition = .imageOnly
             button.title = ""
         }
@@ -449,6 +533,10 @@ final class StatusItemController: NSObject {
         guard let url = appState?.phoneBridgeURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
+    }
+
+    @objc private func openSettings() {
+        onOpenSettings()
     }
 
     @objc private func openAccessibilitySettings() {
