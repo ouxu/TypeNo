@@ -153,6 +153,28 @@ extension Notification.Name {
     static let hotkeyConfigChanged = Notification.Name("ai.marswave.typeno.hotkeyConfigChanged")
 }
 
+enum AppSettings {
+    @MainActor
+    static func setHotkeyModifier(_ modifier: HotkeyModifier) {
+        guard UserDefaults.standard.hotkeyModifier != modifier else { return }
+        UserDefaults.standard.hotkeyModifier = modifier
+        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+    }
+
+    @MainActor
+    static func setTriggerMode(_ mode: TriggerMode) {
+        guard UserDefaults.standard.triggerMode != mode else { return }
+        UserDefaults.standard.triggerMode = mode
+        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+    }
+
+    @MainActor
+    static func setMicrophoneSelection(_ selection: MicrophoneSelection) {
+        guard UserDefaults.standard.microphoneSelection != selection else { return }
+        UserDefaults.standard.microphoneSelection = selection
+    }
+}
+
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -1504,6 +1526,8 @@ final class StatusItemController: NSObject {
         static let record = 100
         static let update = 200
         static let microphone = 250
+        static let hotkeyMenu = 260
+        static let triggerMenu = 270
         static let hotkeyBase = 300
         static let triggerBase = 400
         static let phoneBridgeToggle = 500
@@ -1514,6 +1538,7 @@ final class StatusItemController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private var cancellable: AnyCancellable?
     private var phoneBridgeCancellable: AnyCancellable?
+    private var hotkeyConfigCancellable: AnyCancellable?
     private weak var appState: AppState?
 
     init(appState: AppState) {
@@ -1528,6 +1553,9 @@ final class StatusItemController: NSObject {
         }
         phoneBridgeCancellable = appState.$phoneBridgeRunning.sink { [weak self] _ in
             self?.refreshPhoneBridgeMenu()
+        }
+        hotkeyConfigCancellable = NotificationCenter.default.publisher(for: .hotkeyConfigChanged).sink { [weak self] _ in
+            self?.refreshConfigurationMenu()
         }
     }
 
@@ -1568,6 +1596,7 @@ final class StatusItemController: NSObject {
 
         // Hotkey sub-menu
         let hotkeyItem = NSMenuItem(title: L("Hotkey", "快捷键"), action: nil, keyEquivalent: "")
+        hotkeyItem.tag = MenuTag.hotkeyMenu
         let hotkeySub = NSMenu()
         for (i, m) in HotkeyModifier.allCases.enumerated() {
             let item = NSMenuItem(title: m.label, action: #selector(changeHotkey(_:)), keyEquivalent: "")
@@ -1581,6 +1610,7 @@ final class StatusItemController: NSObject {
 
         // Trigger Mode sub-menu
         let triggerItem = NSMenuItem(title: L("Trigger Mode", "触发方式"), action: nil, keyEquivalent: "")
+        triggerItem.tag = MenuTag.triggerMenu
         let triggerSub = NSMenu()
         let curTrigger = UserDefaults.standard.triggerMode
         for (i, t) in TriggerMode.allCases.enumerated() {
@@ -1625,6 +1655,7 @@ final class StatusItemController: NSObject {
 
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
+        refreshConfigurationMenu()
     }
 
     private func makeMicrophoneSubmenu() -> NSMenu {
@@ -1671,6 +1702,49 @@ final class StatusItemController: NSObject {
         guard let menu = statusItem.menu,
               let microphoneItem = menu.item(withTag: MenuTag.microphone) else { return }
         menu.setSubmenu(makeMicrophoneSubmenu(), for: microphoneItem)
+    }
+
+    private func selectedMicrophoneTitle() -> String {
+        switch UserDefaults.standard.microphoneSelection {
+        case .automatic:
+            return L("Microphone: Automatic", "麦克风：自动")
+        case .specific(let uniqueID):
+            let name = MicrophoneManager.availableMicrophones().first(where: { $0.uniqueID == uniqueID })?.localizedName
+            return L("Microphone: \(name ?? "Unavailable")", "麦克风：\(name ?? "不可用")")
+        }
+    }
+
+    private func refreshHotkeySubmenu() {
+        guard let menu = statusItem.menu,
+              let hotkeyItem = menu.item(withTag: MenuTag.hotkeyMenu),
+              let submenu = hotkeyItem.submenu else { return }
+        let current = UserDefaults.standard.hotkeyModifier
+        hotkeyItem.title = L("Hotkey: \(current.label)", "快捷键：\(current.label)")
+        for (index, item) in submenu.items.enumerated() {
+            item.state = HotkeyModifier.allCases[safe: index] == current ? .on : .off
+        }
+    }
+
+    private func refreshTriggerSubmenu() {
+        guard let menu = statusItem.menu,
+              let triggerItem = menu.item(withTag: MenuTag.triggerMenu),
+              let submenu = triggerItem.submenu else { return }
+        let current = UserDefaults.standard.triggerMode
+        triggerItem.title = L("Trigger: \(current.label)", "触发方式：\(current.label)")
+        for (index, item) in submenu.items.enumerated() {
+            item.state = TriggerMode.allCases[safe: index] == current ? .on : .off
+        }
+    }
+
+    private func refreshConfigurationMenu() {
+        refreshMicrophoneSubmenu()
+        statusItem.menu?.item(withTag: MenuTag.microphone)?.title = selectedMicrophoneTitle()
+        refreshHotkeySubmenu()
+        refreshTriggerSubmenu()
+        if let phase = appState?.phase {
+            updateRecordMenuItem(for: phase)
+            updateTitle(for: phase)
+        }
     }
 
     private func updateRecordMenuItem(for phase: AppPhase) {
@@ -1727,32 +1801,22 @@ final class StatusItemController: NSObject {
     @objc private func changeHotkey(_ sender: NSMenuItem) {
         let idx = sender.tag - MenuTag.hotkeyBase
         guard let mod = HotkeyModifier.allCases[safe: idx] else { return }
-        UserDefaults.standard.hotkeyModifier = mod
-        // Update checkmarks
-        sender.menu?.items.forEach { $0.state = $0.tag == sender.tag ? .on : .off }
-        // Refresh title + record item
-        if let phase = appState?.phase {
-            updateTitle(for: phase)
-            updateRecordMenuItem(for: phase)
-        }
-        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+        AppSettings.setHotkeyModifier(mod)
     }
 
     @objc private func changeMicrophone(_ sender: NSMenuItem) {
         if let uniqueID = sender.representedObject as? String {
-            UserDefaults.standard.microphoneSelection = .specific(uniqueID)
+            AppSettings.setMicrophoneSelection(.specific(uniqueID))
         } else {
-            UserDefaults.standard.microphoneSelection = .automatic
+            AppSettings.setMicrophoneSelection(.automatic)
         }
-        refreshMicrophoneSubmenu()
+        refreshConfigurationMenu()
     }
 
     @objc private func changeTriggerMode(_ sender: NSMenuItem) {
         let idx = sender.tag - MenuTag.triggerBase
         guard let mode = TriggerMode.allCases[safe: idx] else { return }
-        UserDefaults.standard.triggerMode = mode
-        sender.menu?.items.forEach { $0.state = $0.tag == sender.tag ? .on : .off }
-        NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
+        AppSettings.setTriggerMode(mode)
     }
 
     @objc private func openPrivacySettings() {
@@ -1822,7 +1886,7 @@ final class StatusItemController: NSObject {
 
 extension StatusItemController: NSWindowDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
-        refreshMicrophoneSubmenu()
+        refreshConfigurationMenu()
         refreshPhoneBridgeMenu()
     }
 
