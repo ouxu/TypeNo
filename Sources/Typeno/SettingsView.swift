@@ -7,18 +7,26 @@ struct SettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                recordingSection
-                phoneInputSection
-                environmentSection
-                actionsSection
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    header
+                    recordingSection
+                    phoneInputSection
+                    environmentSection
+                    actionsSection
+                }
+                .padding(.horizontal, 32)
+                .padding(.vertical, 28)
+                .frame(maxWidth: 860, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .padding(24)
         }
-        .frame(minWidth: 720, minHeight: 620)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 760, minHeight: 660)
         .onAppear {
             viewModel.refresh()
         }
@@ -272,8 +280,12 @@ struct SettingsView: View {
 
             Spacer()
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8)
+        )
     }
 }
 
@@ -297,10 +309,12 @@ private struct SettingsSection<Content: View>: View {
 
     var body: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
                 content
             }
-            .padding(.top, 6)
+            .padding(.top, 10)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 6)
         } label: {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: systemImage)
@@ -317,6 +331,12 @@ private struct SettingsSection<Content: View>: View {
                 }
             }
         }
+        .padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
+        )
     }
 }
 
@@ -332,7 +352,7 @@ private struct SettingsRow<Content: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 18) {
+        HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
@@ -343,7 +363,9 @@ private struct SettingsRow<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             content
+                .padding(.top, 2)
         }
+        .padding(.vertical, 4)
     }
 }
 
@@ -387,7 +409,7 @@ private struct EnvironmentRow: View {
     var action: (() -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 18) {
+        HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
@@ -448,8 +470,12 @@ private struct QRCodeCard: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(14)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8)
+        )
     }
 }
 
